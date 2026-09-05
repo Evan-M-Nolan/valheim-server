@@ -72,7 +72,7 @@ Parameters:
     Type: String
     AllowedPattern: https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)
     ConstraintDescription: 'Must be a valid URL.'
-    Default: https://raw.githubusercontent.com/aws-samples/personal-game-server-manager/main/Bash/valheim.sh
+    Default: https://raw.githubusercontent.com/Evan-M-Nolan/valheim-server/refs/heads/cloud-formation/scripts/valheim.sh
   KeyName:
     Description: >-
       This is required so you can access the server.  If there is no option to
