@@ -79,10 +79,15 @@ services:
       AUTO_BACKUP_DAYS_TO_LIVE: 3
       AUTO_BACKUP_ON_UPDATE: 1
       AUTO_BACKUP_ON_SHUTDOWN: 1
+      LD_LIBRARY_PATH: "/home/steam/valheim/linux64:/home/steam/valheim"
     volumes:
       - ./valheim/saves:/home/steam/.config/unity3d/IronGate/Valheim
-      - ./valheim/server:/home/steam/valheim
+      - valheim_server_files:/home/steam/valheim
       - ./valheim/backups:/home/steam/backups
+
+volumes:
+  valheim_server_files:
+
 EOF
 
 # -d runs it in the background (the original "up" blocked the script forever).
