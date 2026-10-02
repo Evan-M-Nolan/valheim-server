@@ -85,11 +85,11 @@ Parameters:
     Type: 'AWS::EC2::KeyPair::KeyName'
   DiskSize:
     Description: >-
-      Size of disk - you must choose a disk size of at least 8GiB (because this
-      is the size of the Linux AMI)
+      Size of disk in GiB - minimum 8.  Valheim plus Docker needs more room than
+      the 8 GiB default of the AMI, so 20 is recommended.
     AllowedPattern: '^([8-9]|([1-9]\d{1,}))$'
     ConstraintDescription: You must choose a disk size of at least 8 GiB
-    Default: '8'
+    Default: '20'
     Type: String
   DiskType:
     Description: Choose disk type.  GP3 is recommended
@@ -98,15 +98,15 @@ Parameters:
       - gp3
       - gp2
       - standard
-      - IO2
     Default: gp3
     ConstraintDescription: You must choose a disk type
     Type: String
   InstanceType:
-    Description: 'Select the AWS EC2 instance type you want.  You can change avaialble options later via the AWS Console - see blog entry for more details'
+    Description: 'Select the AWS EC2 instance type you want.  You can change avaialble options later via the AWS Console - see blog entry for more details.  Valheim needs at least 4 GiB of RAM (t3a.medium or larger).'
     AllowedPattern: .+
     ConstraintDescription: You must choose a server size
     Type: String
+    Default: t3a.large
     AllowedValues:
       - t3a.micro
       - t3a.small
@@ -115,19 +115,21 @@ Parameters:
       - t3a.xlarge
       - t3a.2xlarge
   LatestAMIIDx86:
-    Description: Defaults to the latest Ubuntu AMI ID.  You can replace this if you would like to use a different AMI / Operating System.
+    Description: Defaults to the latest Ubuntu 24.04 LTS AMI ID.  You can replace this if you would like to use a different AMI / Operating System.
     Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
-    Default: /aws/service/canonical/ubuntu/server/20.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
   GamingTCPTrafficPortStart:
     Description: Enter port number for your server ingress security group.  This will open your gaming server to TCP traffic to a range of ports with this as the lower boundary.
     Type: String
     AllowedPattern: ^(^$|[0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$
     ConstraintDescription: Must be a valid port number.
+    Default: ''
   GamingTCPTrafficPortEnd:
     Description: Enter port number for your server ingress security group.  This will open your gaming server to TCP traffic to a range of ports with this as the upper boundary.
     Type: String
     AllowedPattern: ^(^$|[0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$
     ConstraintDescription: Must be a valid port number.
+    Default: ''
   GamingUDPTrafficPortStart:
     Description: Enter port number for your server ingress security group.  This will open your gaming server to UDP traffic to a range of ports with this as the lower boundary.
     Type: String
@@ -164,6 +166,7 @@ Parameters:
   ShutdownTimeHours:
     Description: Setting a time here will automatically stop your server at the same time every day.  You adjust the rule, add rules, changes days etc. later directly in the AWS EventBridge Console.  IMPORTANT NOTE - the time must be set in GMT not your local time zone (also note therefore this time will appear to change when going from summer time to winter for relevant time zones).  Leaving blank will not set an auto server shut down rule.
     Type: String
+    Default: 'None - do not auto shut-down'
     AllowedValues:
       - 'None - do not auto shut-down'
       - '23'
@@ -193,6 +196,7 @@ Parameters:
   ShutdownTimeMins:
     Description: Minutes past the hours to auto shut down your server each day
     Type: String
+    Default: 'Not Applicable'
     AllowedValues:
       - 'Not Applicable'
       - '0'
@@ -212,12 +216,6 @@ Conditions:
   ShutdownTimeHoursIsNull: !Equals
     - !Ref ShutdownTimeHours
     - 'None - do not auto shut-down'
-  ShutdownTimeMinsIsNull: !Equals
-    - !Ref ShutdownTimeMins
-    - 'None'
-  noSecIngress: !And
-    - !Condition hasTCP
-    - !Condition hasUDP
   hasTCP: !Not 
     - !Equals 
       - !Ref GamingTCPTrafficPortStart
@@ -230,7 +228,13 @@ Conditions:
 Resources:
   mcEC2Instance:
     Type: 'AWS::EC2::Instance'
-    DependsOn: mcIgAttachment
+    # The instance needs working internet (gateway attached, default route, route table
+    # associated with the subnet) BEFORE it boots, otherwise the user data script cannot
+    # download packages on first boot - and user data only ever runs once.
+    DependsOn:
+      - mcIgAttachment
+      - mcRoute
+      - mcRouteTblAttach
     Properties:
       SecurityGroupIds:
         - !Ref mcSecurityGroup
@@ -240,9 +244,12 @@ Resources:
       SubnetId: !Ref mcSubnet
       IamInstanceProfile: !Ref mcInstanceProfile
       KeyName: !Ref KeyName
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
       Tags:
         - Key: Name
-          Value: Cloudformation MC server
+          Value: Cloudformation Valheim server
         - Key: !Ref IdTagName
           Value: !Ref IdTagValue
         - Key: domain
@@ -261,20 +268,12 @@ Resources:
         Fn::Base64: !Sub 
           - |
             #!/bin/bash -xe
-            apt update
-            apt upgrade -y
-            apt install -y python-setuptools
-            mkdir -p /opt/aws/bin
-            wget https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
-            python3 -m easy_install --script-dir /opt/aws/bin aws-cfn-bootstrap-py3-latest.tar.gz
-            ln -s /root/aws-cfn-bootstrap-latest/init/ubuntu/cfn-hup /etc/init.d/cfn-hup
             echo ${AWS::StackName} > /tmp/mcParamName.txt
             mkdir -p /usr/games/install
             cd /usr/games/install
-            wget -O gameserverinstall.sh ${GameServer}
+            curl -fsSL -o gameserverinstall.sh ${GameServer}
             chmod +x gameserverinstall.sh
             ./gameserverinstall.sh
-            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource mcC2Instance --region ${AWS::Region}
           - GameServer: !Ref GameServer
 
   mcPwordParameter:
@@ -337,8 +336,17 @@ Resources:
       RestApiId: !Ref mcControlApi
       Type: COGNITO_USER_POOLS
 
+  # Deployment must wait for EVERY method, otherwise the first deployment can miss some of them
   mcControlApiDeployment:
-    DependsOn: mcApiGetInfoGetMethod
+    DependsOn:
+      - mcApiGetInfoGetMethod
+      - mcApiGetInfoOptionsMethod
+      - mcApiStartGetMethod
+      - mcApiStartOptionsMethod
+      - mcApiStopGetMethod
+      - mcApiStopOptionsMethod
+      - mcApiResizeGetMethod
+      - mcApiResizeOptionsMethod
     Type: 'AWS::ApiGateway::Deployment'
     Properties: 
       RestApiId: !Ref mcControlApi
@@ -1101,8 +1109,8 @@ Resources:
       Description: Custom resource lambda to copy required code files from github to S3
       Role: !GetAtt mcCustomResourceLambdaIamRole.Arn
       Handler: index.lambda_handler
-      Runtime: python3.8
-      Timeout: 10
+      Runtime: python3.13
+      Timeout: 30
   
   mcUpdateConfigLambda:
     Type: AWS::Lambda::Function
@@ -1144,8 +1152,8 @@ Resources:
       Description: Custom resource lambda to update config files on stack build complete
       Role: !GetAtt mcCustomResourceLambdaIamRole.Arn
       Handler: index.lambda_handler
-      Runtime: python3.8
-      Timeout: 10
+      Runtime: python3.13
+      Timeout: 30
 
   mcgetSrcIpsLambda:
     Type: AWS::Lambda::Function
@@ -1172,8 +1180,8 @@ Resources:
       Description: Custom resource lambda to obtain source IP address range for EC2 Instance Connect in current region
       Role: !GetAtt mcCustomResourceLambdaIamRole.Arn
       Handler: index.lambda_handler
-      Runtime: python3.8
-      Timeout: 10
+      Runtime: python3.13
+      Timeout: 30
 
   mcStartStopLambda:
     Type: 'AWS::Lambda::Function'
@@ -1194,7 +1202,7 @@ Resources:
       MemorySize: 128
       PackageType: Zip
       Role: !GetAtt mcStartStopLambdaIamRole.Arn
-      Runtime: python3.8
+      Runtime: python3.13
       Timeout: 10
 
   mcUpdateDnsLambda:
@@ -1209,7 +1217,7 @@ Resources:
       MemorySize: 128
       PackageType: Zip
       Role: !GetAtt mcUpdateDnsLambdaIamRole.Arn
-      Runtime: python3.8
+      Runtime: python3.13
       Timeout: 10
 
   mcLambdaSourceFilesS3:
@@ -1255,14 +1263,15 @@ Resources:
                 - 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${OriginAccessiId}'
                 - OriginAccessiId: !Ref mcOriginAccessId
 
+  # Log buckets cannot use SSE-KMS (S3 server access logs and CloudFront logs can't be
+  # delivered to them), and "KMS-KEY-ARN" was a placeholder, so use S3-managed encryption.
   mcLoggingBucket:
     Type: AWS::S3::Bucket
     Properties: 
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
-              SSEAlgorithm: 'aws:kms'
-              KMSMasterKeyID: KMS-KEY-ARN
+              SSEAlgorithm: AES256
       AccessControl: LogDeliveryWrite
       OwnershipControls:
         Rules:
@@ -1346,7 +1355,7 @@ Resources:
       Tags:
         - Key: Name
           Value: CF Gaming server Security Group
-      GroupDescription: Enable HTTP access via port 80 locked down to the load balancer
+      GroupDescription: Allows game traffic to the gaming server and SSH from EC2 Instance Connect
       VpcId: !Ref mcVPC
       
   mcSecurityGroupIngressTCP:
@@ -1398,6 +1407,7 @@ Resources:
   
   mcRoute:
     Type: 'AWS::EC2::Route'
+    DependsOn: mcIgAttachment
     Properties:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref mcInternetGateway
@@ -1538,6 +1548,10 @@ Outputs:
     Description: This is the public IP for your gaming server, you will need to run a "start" command to associate your domain name with it (if you selected one)
     Value: !GetAtt mcEC2Instance.PublicIp
 
+  mcValheimPasswordParameter:
+    Description: Name of the Parameter Store entry holding your Valheim server password (Systems Manager > Parameter Store, then show decrypted value)
+    Value: !Ref mcPwordParameter
+
   mcCognitoUserPoolId:
     Description: Unique user pool ID for the people you want to be able to control your server
     Value: !Ref mcCognitoUserPool
@@ -1565,4 +1579,3 @@ Outputs:
   mcCognitoClientID:
     Description: The clientID for the Cognito user pool
     Value: !Ref mcCognitoAppClient
-    
